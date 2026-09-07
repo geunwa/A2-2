@@ -1,0 +1,25 @@
+# 비밀값
+.env
+
+# 생성 데이터 / 산출물
+data/
+logs/
+output/
+
+# 파이썬
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 에디터 / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

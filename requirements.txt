@@ -1,0 +1,7 @@
+# NewsBot 의존성 (Python 3.10+)
+requests>=2.31          # HTTP 수집 + AI REST API 호출
+beautifulsoup4>=4.12    # HTML/RSS 파싱
+lxml>=5.0               # BeautifulSoup 의 xml/lxml 파서 백엔드
+matplotlib>=3.8         # 차트 생성(PNG)
+pandas>=2.0             # Excel 내보내기
+openpyxl>=3.1           # Excel(.xlsx) 엔진

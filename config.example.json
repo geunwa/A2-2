@@ -1,0 +1,122 @@
+{
+  "app": {
+    "name": "NewsBot",
+    "description": "뉴스 수집 · AI 요약 · 인사이트 분석 · 리포트 CLI"
+  },
+  "paths": {
+    "db": "data/newsbot.db",
+    "output_dir": "output",
+    "chart_dir": "output/charts",
+    "export_dir": "output/exports",
+    "report_dir": "output/reports",
+    "log_dir": "logs"
+  },
+  "http": {
+    "timeout": 10,
+    "max_retries": 2,
+    "backoff_sec": 1.5,
+    "request_delay_sec": 1.0,
+    "user_agent": "NewsBot/1.0 (educational project; +https://example.com/newsbot)",
+    "respect_robots": true
+  },
+  "sources": {
+    "default": "yna",
+    "yna": {
+      "name": "연합뉴스",
+      "site": "https://www.yna.co.kr",
+      "rss_template": "https://www.yna.co.kr/rss/{slug}.xml",
+      "list_template": "https://www.yna.co.kr/{slug}/all",
+      "categories": {
+        "정치": "politics",
+        "경제": "economy",
+        "산업": "industry",
+        "국제": "international",
+        "사회": "society",
+        "문화": "culture",
+        "연예": "entertainment",
+        "스포츠": "sports",
+        "건강": "health",
+        "지역": "local",
+        "증권": "market",
+        "전체": "news"
+      },
+      "rss_only_categories": ["증권", "전체"],
+      "default_categories": ["경제", "산업", "정치", "국제"],
+      "article_selectors": ["div.story-news", "#articleWrap article", "article"],
+      "list_link_selector": "a.tit-news",
+      "drop_paragraph_classes": ["txt-copyright", "txt-desc", "txt-link", "adrs", "ad", "txt-side"],
+      "drop_paragraph_patterns": [
+        "^전문보기",
+        "^제보는",
+        "무단 전재",
+        "^\\(끝\\)$",
+        "저작권자",
+        "^\\s*$"
+      ]
+    }
+  },
+  "cleaning": {
+    "on_duplicate": "skip",
+    "required_fields": ["title", "url", "content"],
+    "min_content_length": 60,
+    "min_title_length": 5,
+    "missing_category": "미분류",
+    "missing_author": "미상",
+    "content_fallback_to_description": true,
+    "max_content_length": 20000
+  },
+  "ai": {
+    "provider": "auto",
+    "fallback_to_mock": true,
+    "timeout": 60,
+    "max_retries": 2,
+    "backoff_sec": 2.0,
+    "providers": {
+      "gemini": {
+        "api_key_env": "GEMINI_API_KEY",
+        "model": "gemini-2.5-flash",
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+      },
+      "openai": {
+        "api_key_env": "OPENAI_API_KEY",
+        "model": "gpt-4o-mini",
+        "endpoint": "https://api.openai.com/v1/chat/completions"
+      },
+      "anthropic": {
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "model": "claude-opus-5",
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "api_version": "2023-06-01"
+      }
+    },
+    "summary": {
+      "max_chars": 200,
+      "max_input_chars": 4000,
+      "skip_if_summarized": true
+    },
+    "analyze": {
+      "max_articles": 60,
+      "snippet_chars": 350
+    },
+    "sentiment": {
+      "max_input_chars": 1200
+    }
+  },
+  "report": {
+    "top_n": 5,
+    "format": "md",
+    "include_charts": true
+  },
+  "chart": {
+    "font_candidates": ["Malgun Gothic", "NanumGothic", "Noto Sans KR", "AppleGothic", "Gulim"],
+    "dpi": 130,
+    "figsize": [10, 6]
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/newsbot.log",
+    "console": true,
+    "max_bytes": 2000000,
+    "backup_count": 3
+  }
+}

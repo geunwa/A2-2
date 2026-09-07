@@ -1,0 +1,7 @@
+# 저장소에는 LF 로 통일해서 저장한다 (윈도우 작업 복사본은 CRLF 유지)
+* text=auto eol=lf
+
+# 바이너리
+*.png binary
+*.xlsx binary
+*.db binary
