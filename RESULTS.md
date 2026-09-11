@@ -489,3 +489,7 @@ docs/images/                                이 문서에 삽입된 차트 사�
 ---
 
 자세한 사용법과 설계 설명은 [README.md](README.md) 를 참고하세요.
+
+---
+
+전문가 피드백 4개 항목 대응 내용은 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 를 참고하세요.

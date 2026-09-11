@@ -473,6 +473,8 @@ sudo systemctl enable --now newsbot.timer
 
 ## 9. 트러블슈팅
 
+> 상세 원인 분석 및 올바른 사용법 → [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
 | 증상 | 원인 / 해결 |
 |---|---|
 | `설정 파일을 찾을 수 없습니다` | `cp config.example.json config.json` |
