@@ -119,6 +119,15 @@ class Analyzer:
                 return None
             model = self.client.label
 
+        # result 구성 전에 유효성 검사 — 불필요한 dict 생성 방지
+        if not any([
+            _as_list(parsed.get("trends")),
+            _as_list(parsed.get("keywords")),
+            _as_list(parsed.get("implications")),
+        ]):
+            log.error("AI 분석 결과에서 유효한 항목을 찾지 못했습니다.")
+            return None
+
         result = {
             "date_from": date_from,
             "date_to": date_to,
@@ -134,17 +143,12 @@ class Analyzer:
             "raw_response": raw_text,
         }
 
-        if not any([result["trends"], result["keywords"], result["implications"]]):
-            log.error("AI 분석 결과에서 유효한 항목을 찾지 못했습니다.")
-            return None
-
         if save:
             result["id"] = self.storage.insert_analysis(result)
             log.info("분석 완료 (analysis_id=%s)", result["id"])
         else:
             log.info("분석 완료 (저장 생략)")
         return result
-
 
 # ---------------------------------------------------------------------- 유틸
 def _as_list(value: Any) -> list[str]:
