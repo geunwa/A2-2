@@ -564,8 +564,8 @@ RSS + 크롤링 혼합 파이프라인에서 집계 오류가 발생하지 않�
 ```python
 # rss.py — 본문 실패 시 조용히 계속 진행
 except FetchError as exc:
-    log.warning("본문 요청 실패(설명문으로 대체): %s (%s)", url, exc)
-    result.errors.append(f"body: {url}: {exc}")
+    log.warning("본문 수집 실패(선택적 처리): %s (%s)", url, exc)
+    result.add_body_error(f"body: {url}: {exc}")
     return   # ← 전체 수집을 중단하지 않음
 ```
 
@@ -580,58 +580,34 @@ except FetchError as exc:
 
 ### 개선점 및 원인 분해
 
-#### ❶ failed 카운터 불일치 — `_enrich_with_body` 실패가 집계 누락
+#### ❶ body_failed 카운터 분리 — 본문 실패를 메타 실패와 독립 집계 ✅ 적용 완료
 
-**문제**
-
-`_enrich_with_body()`에서 본문 요청이 실패하면 `result.errors`에는 추가되지만
-`result.failed`는 증가하지 않습니다.
-`add_error()`를 쓰지 않고 `result.errors.append()`를 직접 호출하기 때문입니다.
+본문 수집 실패를 `result.errors.append()` 로 직접 추가하면
+`failed` 카운터가 증가하지 않아 성공률이 과장됩니다.
+`add_body_error()` 로 통일해 `body_failed` 카운터를 독립적으로 집계합니다.
 
 ```python
-# 현재 — failed 카운터 누락
-result.errors.append(f"body: {url}: {exc}")
-
-# 개선 — add_error() 통일
-result.add_error(f"body: {url}: {exc}")
+# rss.py — 현재 적용된 코드
+result.add_body_error(f"body: {url}: {exc}")   # ✅ body_failed 자동 증가
+result.add_body_error(f"parse: {url}: {exc}")  # ✅ body_failed 자동 증가
 ```
 
-**영향**
-
-최종 리포트에서 `failed` 수치가 실제보다 낮게 집계되어
-"수집 성공률"이 과장될 수 있습니다.
+**영향**: `body_failed` 가 본문 실패 건수를 정확히 반영하며, `succeeded`(메타 수집 성공)와 독립적으로 집계됩니다.
 
 ---
 
-#### ❷ succeeded 선(先)증가 — 본문 실패 시 성공으로 오분류
+#### ❷ succeeded / body_failed 카운터 분리 — 메타·본문 성공률 독립 집계 ✅ 적용 완료
 
-**문제**
-
-`collect()` 내부에서 `result.succeeded += 1`을 한 뒤
-`_enrich_with_body()`를 호출합니다.
-본문 수집이 실패해도 `succeeded`는 이미 올라간 상태입니다.
+`succeeded` 는 메타데이터 수집 성공 기준으로 정의하고,
+본문 수집 실패는 별도 `body_failed` 카운터로 분리해 의미를 명확히 합니다.
 
 ```python
-# 현재 순서 (rss.py)
+# rss.py collect() — 현재 적용된 순서
+if with_content:
+    self._enrich_with_body(record, result)  # 1. 본문 보강 먼저
 result.records.append(record)
-result.succeeded += 1          # ← 먼저 증가
+result.succeeded += 1   # 2. 메타 수집 성공 기준으로 증가
 taken += 1
-# _enrich_with_body 는 위 블록 안에서 이미 호출됨
-```
-
-**개선 방향**
-
-`succeeded`를 증가시키는 시점을 `_enrich_with_body()` 이후로 옮기거나,
-본문 실패를 별도 `body_failed` 카운터로 분리해 의미를 명확히 합니다.
-
-```python
-# 개선안 A — 카운터 분리
-@dataclass
-class CollectResult:
-    ...
-    body_failed: int = 0   # 메타 수집 성공 + 본문 수집 실패 건수
-
-# 개선안 B — 본문 실패를 경고로만 처리하고 succeeded 정의를 "메타 수집 성공"으로 문서화
 ```
 
 ---
@@ -726,60 +702,41 @@ per_category_list = [base + (1 if i < remainder else 0) for i in range(len(cats)
 
 ### 불일치 원인 요약표
 
-| # | 위치 | 원인 | 영향 | 우선순위 |
-|---|------|------|------|----------|
-| ❶ | rss.py `_enrich_with_body` | `add_error()` 미사용 → `failed` 누락 | 성공률 과장 | 🔴 높음 |
-| ❷ | rss.py `collect()` | `succeeded` 선증가 → 본문 실패도 성공 집계 | 지표 왜곡 | 🔴 높음 |
-| ❸ | base.py `merge()` | method/source 충돌 미처리 | 수집 방법 구분 불가 | 🟡 중간 |
-| ❹ | http_client.py `_robots` | 인메모리 캐시만 존재 | 재시작 시 불필요한 요청 | 🟢 낮음 |
-| ❺ | rss.py `per_category` | ceil 계산 → limit 초과 가능 | 수집량 미세 초과 | 🟢 낮음 |
+| # | 위치 | 내용 | 영향 | 상태 |
+|---|------|------|------|------|
+| ❶ | rss.py `_enrich_with_body` | `add_body_error()` 통일 → `body_failed` 정확 집계 | 성공률 신뢰성 확보 | ✅ 적용 완료 |
+| ❷ | rss.py `collect()` / base.py | `body_failed` 카운터 분리 + 호출 순서 정렬 | 메타·본문 지표 독립 집계 | ✅ 적용 완료 |
+| ❸ | base.py `merge()` | method/source 충돌 미처리 | 수집 방법 구분 불가 | 🟡 개선 제안 |
+| ❹ | http_client.py `_robots` | 인메모리 캐시만 존재 | 재시작 시 불필요한 요청 | 🟢 개선 제안 |
+| ❺ | rss.py `per_category` | ceil 계산 → limit 초과 가능 | 수집량 미세 초과 | 🟢 개선 제안 |
 
 ---
 
 ### 10-4. 리팩토링 제안 전체 정리 (base.py · rss.py · http_client.py)
 
----
+### 리팩토링 1 — `_enrich_with_body` 오류 집계 통일 ✅ 적용 완료
 
-### 리팩토링 1 — `_enrich_with_body` 오류 집계 통일
+본문 수집 실패를 `result.errors.append()` 로 직접 추가하면
+`failed` 카운터가 증가하지 않아 성공률이 과장됩니다.
+이를 방지하기 위해 `add_body_error()` 로 통일했습니다.
 
-#### 변경 전
+#### 현재 코드 (적용 완료)
 
 ```python
-# rss.py
+# rss.py — _enrich_with_body()
 def _enrich_with_body(self, record: dict[str, Any], result: CollectResult) -> None:
     url = record["url"]
     try:
         resp = self.http.get(url)
     except FetchError as exc:
-        log.warning("본문 요청 실패(설명문으로 대체): %s (%s)", url, exc)
-        result.errors.append(f"body: {url}: {exc}")   # ← failed 누락
+        log.warning("본문 수집 실패(선택적 처리): %s (%s)", url, exc)
+        result.add_body_error(f"body: {url}: {exc}")   # ✅ body_failed 자동 증가
         return
     try:
         parsed = extract_article(resp.text, self.source_cfg)
     except Exception as exc:
         log.warning("본문 파싱 실패: %s (%s)", url, exc)
-        result.errors.append(f"parse: {url}: {exc}")  # ← failed 누락
-        return
-    ...
-```
-
-#### 변경 후
-
-```python
-# rss.py
-def _enrich_with_body(self, record: dict[str, Any], result: CollectResult) -> None:
-    url = record["url"]
-    try:
-        resp = self.http.get(url)
-    except FetchError as exc:
-        log.warning("본문 요청 실패(설명문으로 대체): %s (%s)", url, exc)
-        result.add_error(f"body: {url}: {exc}")   # ✅ failed 자동 증가
-        return
-    try:
-        parsed = extract_article(resp.text, self.source_cfg)
-    except Exception as exc:
-        log.warning("본문 파싱 실패: %s (%s)", url, exc)
-        result.add_error(f"parse: {url}: {exc}")  # ✅ failed 자동 증가
+        result.add_body_error(f"parse: {url}: {exc}")  # ✅ body_failed 자동 증가
         return
     ...
 ```
@@ -788,32 +745,12 @@ def _enrich_with_body(self, record: dict[str, Any], result: CollectResult) -> No
 
 ---
 
-### 리팩토링 2 — `succeeded` 증가 시점 조정
+### 리팩토링 2 — `succeeded` / `body_failed` 카운터 분리 ✅ 적용 완료
 
-#### 변경 전
+메타데이터 수집 성공(`succeeded`)과 본문 수집 실패(`body_failed`)를
+독립 카운터로 분리해 지표 신뢰성을 확보했습니다.
 
-```python
-# rss.py collect()
-if with_content:
-    self._enrich_with_body(record, result)
-result.records.append(record)
-result.succeeded += 1   # ← 본문 실패 여부와 무관하게 증가
-taken += 1
-```
-
-#### 변경 후 (방법 A — 메타 수집 성공 기준 명시)
-
-```python
-# rss.py collect()
-# "succeeded = 메타데이터 수집 성공" 으로 정의를 문서화
-result.records.append(record)
-result.succeeded += 1   # 메타 수집 성공 기준
-taken += 1
-if with_content:
-    self._enrich_with_body(record, result)  # 실패 시 body_failed 증가
-```
-
-#### 변경 후 (방법 B — body_failed 카운터 분리)
+#### 현재 코드 — base.py (적용 완료)
 
 ```python
 # base.py
@@ -828,15 +765,8 @@ class CollectResult:
     errors: list[str] = field(default_factory=list)
 
     def add_body_error(self, message: str) -> None:
-        self.body_failed += 1
+        self.body_failed += 1          # ✅ body_failed만 증가 (succeeded 유지)
         self.errors.append(message)
-```
-
-```python
-# rss.py _enrich_with_body
-except FetchError as exc:
-    result.add_body_error(f"body: {url}: {exc}")  # ✅ 별도 집계
-    return
 ```
 
 **효과**: 메타 수집 성공률과 본문 수집 성공률을 독립적으로 분석할 수 있습니다.
@@ -848,18 +778,29 @@ except FetchError as exc:
 #### 변경 전
 
 ```python
-# base.py
+# base.py — merge() 현재 구현
+# body_failed 는 누산하지만 method/source 충돌은 미처리
 @dataclass
 class CollectResult:
-    method: str    # ← 단일 문자열, merge 후 덮어씌워짐
+    method: str
     source: str
+    records: list[dict[str, Any]] = field(default_factory=list)
+    succeeded: int = 0
+    failed: int = 0
+    body_failed: int = 0   # ← 이미 존재
+    errors: list[str] = field(default_factory=list)
 
     def merge(self, other: "CollectResult") -> "CollectResult":
         self.records.extend(other.records)
         self.succeeded += other.succeeded
         self.failed += other.failed
-        self.errors.extend(other.errors)
+        self.body_failed += other.body_failed   # ← 이미 누산
+        if other.source != self.source:
+            self.errors.extend(f"[{other.source}] {e}" for e in other.errors)
+        else:
+            self.errors.extend(other.errors)
         return self
+        # ↑ method 필드는 첫 번째 객체 값 유지 → 개선 대상
 ```
 
 #### 변경 후
