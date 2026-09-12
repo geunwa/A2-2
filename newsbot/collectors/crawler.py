@@ -43,9 +43,22 @@ class CrawlCollector:
         rss_only = set(self.source_cfg.get("rss_only_categories", []))
         return [c for c in self.source_cfg.get("categories", {}) if c not in rss_only]
 
-    def collect(self, categories: list[str] | None = None, limit: int = 20, **_) -> CollectResult:
+    def collect(
+        self,
+        categories: list[str] | None = None,
+        limit: int = 20,
+        *,
+        # ✅ 수정: **_ 대신 with_content 명시 — rss.py 와 인터페이스 통일
+        #    변경 전: def collect(..., **_)
+        #    변경 후: def collect(..., *, with_content: bool = True)
+        with_content: bool = True,
+    ) -> CollectResult:
         result = CollectResult(method=self.method, source=self.source_key)
-        cats = categories or self.source_cfg.get("default_categories") or self.available_categories()
+        cats = (
+            categories
+            or self.source_cfg.get("default_categories")
+            or self.available_categories()
+        )
         rss_only = set(self.source_cfg.get("rss_only_categories", []))
         cats = [c for c in cats if c and c not in rss_only]
         if not cats:
@@ -103,22 +116,28 @@ class CrawlCollector:
             log.warning("robots.txt 로 차단된 기사라 건너뜁니다: %s", url)
             result.add_error(f"robots blocked: {url}")
             return None
+
         try:
             resp = self.http.get(url)
         except FetchError as exc:
             log.error("기사 수집 실패: %s (%s)", url, exc)
-            result.add_error(f"{url}: {exc}")
+            result.add_error(f"{url}: {exc}")          # HTTP 실패 → failed
             return None
 
         try:
             parsed = extract_article(resp.text, self.source_cfg)
         except Exception as exc:
             log.error("기사 파싱 실패: %s (%s)", url, exc)
-            result.add_error(f"parse: {url}: {exc}")
+            # ✅ 수정: 파싱 실패는 add_body_error() — rss.py 와 동일 패턴
+            #    변경 전: result.add_error(f"parse: {url}: {exc}")  → failed += 1
+            #    변경 후: result.add_body_error(...)                → body_failed += 1
+            result.add_body_error(f"parse: {url}: {exc}")
             return None
 
         payload = {
-            "title": parsed.get("title") or normalize_text(link.get("title"), keep_newlines=False),
+            "title": parsed.get("title") or normalize_text(
+                link.get("title"), keep_newlines=False
+            ),
             "link": url,
             "pub_date": parsed.get("published_at"),
             "author": parsed.get("author"),
