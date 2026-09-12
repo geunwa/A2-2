@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from ..logger import get_logger
 from ..utils import normalize_text, now_str, strip_html, url_hash
@@ -105,22 +105,29 @@ class RssCollector:
 
     # ------------------------------------------------------------------ 내부
     @staticmethod
+    def _text_of(item: Tag, tag_name: str) -> str:
+        """item 태그에서 tag_name 텍스트를 추출한다. 없으면 빈 문자열 반환."""
+        node = item.find(tag_name)
+        return node.get_text(strip=True) if node else ""
+
+    @staticmethod
     def _parse_feed(payload: bytes) -> list[dict[str, str]]:
         """RSS XML 을 dict 목록으로 변환한다."""
         soup = BeautifulSoup(payload, "xml")
         entries: list[dict[str, str]] = []
-        for item in soup.find_all("item"):
-            def text_of(tag_name: str) -> str:
-                node = item.find(tag_name)
-                return node.get_text(strip=True) if node else ""
 
+        # ✅ 수정: text_of 를 루프 밖 정적 메서드로 분리
+        #    변경 전: 루프 안에서 매 순회마다 함수 객체를 새로 생성
+        #    변경 후: _text_of(item, tag_name) 형태로 item 을 인자로 전달
+        text_of = RssCollector._text_of
+        for item in soup.find_all("item"):
             entries.append({
-                "title": text_of("title"),
-                "link": text_of("link") or text_of("guid"),
-                "pub_date": text_of("pubDate"),
-                "author": text_of("creator") or text_of("author"),
-                "description": strip_html(text_of("description")),
-                "feed_category": text_of("category"),
+                "title":         text_of(item, "title"),
+                "link":          text_of(item, "link") or text_of(item, "guid"),
+                "pub_date":      text_of(item, "pubDate"),
+                "author":        text_of(item, "creator") or text_of(item, "author"),
+                "description":   strip_html(text_of(item, "description")),
+                "feed_category": text_of(item, "category"),
             })
         return entries
 
@@ -162,13 +169,13 @@ class RssCollector:
             resp = self.http.get(url)
         except FetchError as exc:
             log.warning("본문 수집 실패(선택적 처리): %s (%s)", url, exc)
-            result.add_body_error(f"body: {url}: {exc}")  # ✅ 수정
+            result.add_body_error(f"body: {url}: {exc}")
             return
         try:
             parsed = extract_article(resp.text, self.source_cfg)
         except Exception as exc:
             log.warning("본문 파싱 실패: %s (%s)", url, exc)
-            result.add_body_error(f"parse: {url}: {exc}")  # ✅ 수정
+            result.add_body_error(f"parse: {url}: {exc}")
             return
 
         payload = record["payload"]
