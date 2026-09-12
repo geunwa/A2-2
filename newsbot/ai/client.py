@@ -262,6 +262,9 @@ def extract_json(text: str) -> dict[str, Any]:
 def resolve_env_hint(config) -> str:
     """설정에 정의된 API 키 환경변수 이름 안내 문자열."""
     providers = config.get("ai.providers", {}) or {}
-    parts = [f"{name}={cfg.get('api_key_env')}" for name, cfg in providers.items() if cfg.get("api_key_env")]
-    parts = [p for p in parts if os.environ.get(p.split("=")[1], "") == ""]
+    parts = []
+    for name, cfg in providers.items():
+        env = cfg.get("api_key_env")
+        if env and not os.environ.get(env):   # 키가 없는 제공자만 포함
+            parts.append(f"{name}={env}")
     return ", ".join(parts)
