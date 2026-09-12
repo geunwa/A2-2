@@ -138,6 +138,9 @@ $ python main.py summarize --all --limit 3 --dry-run --force
 
 $ python main.py summarize --id 2 --provider mock --max-chars 100
 
+> ID=2 본문 길이(799자)는 이 실행 시점의 DB 상태 기준입니다.
+> EXPERIMENT.md 3장의 194자는 --reprocess 후 재조회 기준으로, 실행 세션이 다릅니다.
+
 [INFO] 요약 대상: 1건 (모델=mock:mock-rule-based, 최대 100자)
 [INFO] [1/1] ID=2 요약 완료 (799자 → 90자)
 [INFO] 요약 완료: 1건 성공, 0건 실패, 0건 스킵
