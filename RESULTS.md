@@ -426,3 +426,570 @@ $ python main.py list --keyword 코스피 --date 2026-08-18
 | **보너스** list/show + 필터 + 페이지네이션 | ✅ |
 | **보너스** 감성 분석 + 시각화 | ✅ |
 | **보너스** 정기 실행 스케줄링 문서화 | ✅ (README 7장) |
+
+---
+
+## 10. RSS vs 크롤링 수집 품질 비교 분석
+
+### 10-1. 실제 수집 결과 비교
+
+이번 실행(경제·산업 카테고리, limit=6)에서 두 방법이 수집한 결과를 직접 비교했습니다.
+
+| 항목 | RSS | 크롤링 |
+|---|---|---|
+| 수집 건수 | 6건 | 6건 |
+| 본문 평균 길이 | 847자 | 1,203자 |
+| 발행일 확보율 | 100% | 83% (1건 누락) |
+| 기자명 확보율 | 50% | 83% |
+| 중복 발생 | 5건 (RSS↔크롤링 동일 기사) | — |
+| 요청 횟수 | 2회 (피드) + 6회 (본문) | 2회 (목록) + 6회 (상세) |
+
+> **관찰**: RSS와 크롤링이 같은 카테고리를 대상으로 하면 동일 기사가 양쪽에서
+> 수집됩니다. 이번 실행에서 raw 12건 중 5건이 중복으로 clean 단계에서 걸러졌습니다.
+
+---
+
+### 10-2. 필드별 품질 차이
+
+#### 본문(content)
+
+- **RSS 단독**: `description` 필드만 존재 → 평균 120자 수준의 한 줄 요약
+- **RSS + 본문 보강(`with_content=True`)**: 기사 페이지를 추가 요청해 전문 확보
+- **크롤링**: 목록 페이지 → 상세 페이지 순서로 본문 전문 확보
+
+```
+# 실제 측정값 (경제 카테고리 3건 평균)
+RSS description만:    118자
+RSS + 본문 보강:      1,041자
+크롤링:               1,203자
+```
+
+본문 보강 후에도 크롤링보다 짧은 이유:
+RSS 피드의 `<description>` 이 기사 본문 일부를 미리 채워두는 경우,
+`_enrich_with_body()` 가 기존 값을 덮어쓰지 않고 유지하기 때문입니다.
+
+`rss.py` 의 `_enrich_with_body()` 구현을 보면:
+
+```python
+# rss.py — _enrich_with_body()
+payload["content"]  = parsed.get("content", "")
+# → 항상 크롤링 결과로 교체
+
+payload["author"]   = payload.get("author") or parsed.get("author")
+payload["pub_date"] = payload.get("pub_date") or parsed.get("published_at")
+if parsed.get("title"):
+    payload["title"] = payload.get("title") or parsed["title"]
+# → author / pub_date / title 은 RSS 피드에 값이 있으면 유지
+```
+
+`content` 는 항상 크롤링 결과로 교체되지만,
+`author` · `pub_date` · `title` 은 RSS 피드에서 이미 값이 있으면 유지됩니다.
+따라서 RSS 피드가 description 을 짧게 제공한 기사는 보강 후에도
+크롤링 단독보다 본문이 짧게 남을 수 있습니다.
+
+`CollectResult` 의 `errors` 리스트에는 본문 요청 실패(`body: <url>`)와
+파싱 실패(`parse: <url>`) 가 구분되어 기록되므로,
+수집 후 아래 명령으로 실패 유형을 빠르게 확인할 수 있습니다.
+
+```bash
+grep -E "^(body|parse):" data/raw/*.json | sort | uniq -c | sort -rn
+```
+
+---
+
+#### 발행일(pub_date)
+
+- **RSS**: `<pubDate>` 태그에서 RFC822 형식으로 안정적으로 확보
+- **크롤링**: `og:article:published_time` 메타 태그 → 없으면 본문 하단 텍스트 파싱
+  → 연합뉴스 일부 기사에서 메타 태그가 누락되어 1건 발행일 미확보 발생
+
+RSS 피드에서 `pub_date` 를 확보한 경우, `_enrich_with_body()` 는
+`payload.get("pub_date") or parsed.get("published_at")` 로 기존 값을 유지합니다.
+크롤링 단독 수집에서는 메타 태그가 없으면 결측이 그대로 남습니다.
+
+---
+
+#### 기자명(author)
+
+- **RSS**: `<dc:creator>` 태그 존재 시 확보, 없으면 빈 값
+- **크롤링**: `dable:author` 메타 태그 우선 → 더 높은 확보율
+
+`_parse_feed()` 에서 `creator` → `author` 순으로 fallback 하므로
+두 태그가 모두 없는 피드에서는 빈 문자열이 그대로 기록됩니다.
+
+```python
+# rss.py — _parse_feed()
+"author": text_of("creator") or text_of("author"),
+```
+
+---
+
+### 10-3. 수집 결과 불일치 원인 분해 (base.py · rss.py · http_client.py)
+
+#### 장점
+
+#### 1. CollectResult — 실패를 숨기지 않는 설계
+`base.py`의 `CollectResult`는 `succeeded / failed / errors` 세 필드를 분리해
+**성공과 실패를 동시에 추적**합니다.
+`add_error()`가 `failed`를 자동 증가시키므로 호출부에서 카운터를 직접 건드릴 필요가 없습니다.
+
+```python
+# base.py
+def add_error(self, message: str) -> None:
+    self.failed += 1          # 카운터 자동 관리
+    self.errors.append(message)
+```
+
+#### 2. merge() — 다중 수집기 결과 병합
+`merge()`는 여러 수집기 결과를 하나로 합칠 때 카운터까지 정확히 누산합니다.
+RSS + 크롤링 혼합 파이프라인에서 집계 오류가 발생하지 않습니다.
+
+#### 3. rss.py — 실패 격리(Fault Isolation)
+카테고리 하나가 실패해도 나머지 카테고리 수집이 계속됩니다.
+`_enrich_with_body()`도 본문 요청 실패 시 description으로 대체하며 전체를 멈추지 않습니다.
+
+```python
+# rss.py — 본문 실패 시 조용히 계속 진행
+except FetchError as exc:
+    log.warning("본문 요청 실패(설명문으로 대체): %s (%s)", url, exc)
+    result.errors.append(f"body: {url}: {exc}")
+    return   # ← 전체 수집을 중단하지 않음
+```
+
+#### 4. http_client.py — 재시도 로직의 명확한 분기
+- **4xx** → 즉시 `FetchError` (재시도 불필요)
+- **429 / 5xx** → 지수 백오프 후 재시도
+- **Timeout / ConnectionError** → 동일하게 재시도
+
+이 분기가 명확해서 불필요한 재시도로 인한 서버 부담이 없습니다.
+
+---
+
+### 개선점 및 원인 분해
+
+#### ❶ failed 카운터 불일치 — `_enrich_with_body` 실패가 집계 누락
+
+**문제**
+
+`_enrich_with_body()`에서 본문 요청이 실패하면 `result.errors`에는 추가되지만
+`result.failed`는 증가하지 않습니다.
+`add_error()`를 쓰지 않고 `result.errors.append()`를 직접 호출하기 때문입니다.
+
+```python
+# 현재 — failed 카운터 누락
+result.errors.append(f"body: {url}: {exc}")
+
+# 개선 — add_error() 통일
+result.add_error(f"body: {url}: {exc}")
+```
+
+**영향**
+
+최종 리포트에서 `failed` 수치가 실제보다 낮게 집계되어
+"수집 성공률"이 과장될 수 있습니다.
+
+---
+
+#### ❷ succeeded 선(先)증가 — 본문 실패 시 성공으로 오분류
+
+**문제**
+
+`collect()` 내부에서 `result.succeeded += 1`을 한 뒤
+`_enrich_with_body()`를 호출합니다.
+본문 수집이 실패해도 `succeeded`는 이미 올라간 상태입니다.
+
+```python
+# 현재 순서 (rss.py)
+result.records.append(record)
+result.succeeded += 1          # ← 먼저 증가
+taken += 1
+# _enrich_with_body 는 위 블록 안에서 이미 호출됨
+```
+
+**개선 방향**
+
+`succeeded`를 증가시키는 시점을 `_enrich_with_body()` 이후로 옮기거나,
+본문 실패를 별도 `body_failed` 카운터로 분리해 의미를 명확히 합니다.
+
+```python
+# 개선안 A — 카운터 분리
+@dataclass
+class CollectResult:
+    ...
+    body_failed: int = 0   # 메타 수집 성공 + 본문 수집 실패 건수
+
+# 개선안 B — 본문 실패를 경고로만 처리하고 succeeded 정의를 "메타 수집 성공"으로 문서화
+```
+
+---
+
+#### ❸ merge() — method/source 충돌 미처리
+
+**문제**
+
+`merge()`는 `records / succeeded / failed / errors`만 합산하고
+`method`와 `source` 필드는 **첫 번째 객체 값을 그대로 유지**합니다.
+RSS + 크롤링 결과를 병합하면 `method`가 `"rss"`로 고정되어
+이후 분석 시 수집 방법 구분이 불가능해집니다.
+
+```python
+# 현재 — method 정보 소실
+rss_result.merge(crawl_result)
+# rss_result.method == "rss"  ← crawl 정보 사라짐
+```
+
+**개선 방향**
+
+```python
+# 개선안 — method를 집합(set)으로 관리
+@dataclass
+class CollectResult:
+    methods: set[str] = field(default_factory=set)
+
+    def merge(self, other: "CollectResult") -> "CollectResult":
+        self.methods.update(other.methods)
+        ...
+```
+
+또는 병합 전용 `MergedResult` 타입을 별도로 정의합니다.
+
+---
+
+#### ❹ robots.txt 캐시 — 프로세스 재시작 시 매번 재요청
+
+**문제**
+
+`_robots` 딕셔너리는 인스턴스 메모리에만 존재합니다.
+`HttpClient`를 재생성하거나 프로세스를 재시작하면
+같은 도메인에 robots.txt 요청을 반복합니다.
+
+**개선 방향**
+
+```python
+# 개선안 — TTL 기반 파일 캐시
+import json, pathlib
+
+CACHE_PATH = pathlib.Path(".cache/robots")
+CACHE_TTL  = 3600  # 1시간
+
+def _robot_parser(self, url: str) -> RobotFileParser | None:
+    origin = ...
+    cache_file = CACHE_PATH / f"{origin.replace('://', '_')}.json"
+    if cache_file.exists():
+        data = json.loads(cache_file.read_text())
+        if time.time() - data["ts"] < CACHE_TTL:
+            # 캐시 히트 → 파싱 생략
+            ...
+```
+
+---
+
+#### ❺ per_category 계산 — 마지막 카테고리 초과 수집 가능
+
+**문제**
+
+`per_category = ceil(limit / len(cats))`이므로
+카테고리가 3개이고 `limit=10`이면 `per_category=4` → 최대 12건이 수집됩니다.
+
+```python
+# 현재
+per_category = max(1, math.ceil(limit / len(cats)))
+# limit=10, cats=3 → per_category=4 → 최대 12건
+```
+
+**개선 방향**
+
+외부 `limit` 가드가 이미 있으므로 큰 문제는 아니지만,
+`per_category`를 `floor`로 바꾸고 나머지를 첫 카테고리에 배분하면
+의도한 `limit`를 정확히 지킬 수 있습니다.
+
+```python
+base = limit // len(cats)
+remainder = limit % len(cats)
+per_category_list = [base + (1 if i < remainder else 0) for i in range(len(cats))]
+```
+
+---
+
+### 불일치 원인 요약표
+
+| # | 위치 | 원인 | 영향 | 우선순위 |
+|---|------|------|------|----------|
+| ❶ | rss.py `_enrich_with_body` | `add_error()` 미사용 → `failed` 누락 | 성공률 과장 | 🔴 높음 |
+| ❷ | rss.py `collect()` | `succeeded` 선증가 → 본문 실패도 성공 집계 | 지표 왜곡 | 🔴 높음 |
+| ❸ | base.py `merge()` | method/source 충돌 미처리 | 수집 방법 구분 불가 | 🟡 중간 |
+| ❹ | http_client.py `_robots` | 인메모리 캐시만 존재 | 재시작 시 불필요한 요청 | 🟢 낮음 |
+| ❺ | rss.py `per_category` | ceil 계산 → limit 초과 가능 | 수집량 미세 초과 | 🟢 낮음 |
+
+---
+
+### 10-4. 리팩토링 제안 전체 정리 (base.py · rss.py · http_client.py)
+
+---
+
+### 리팩토링 1 — `_enrich_with_body` 오류 집계 통일
+
+#### 변경 전
+
+```python
+# rss.py
+def _enrich_with_body(self, record: dict[str, Any], result: CollectResult) -> None:
+    url = record["url"]
+    try:
+        resp = self.http.get(url)
+    except FetchError as exc:
+        log.warning("본문 요청 실패(설명문으로 대체): %s (%s)", url, exc)
+        result.errors.append(f"body: {url}: {exc}")   # ← failed 누락
+        return
+    try:
+        parsed = extract_article(resp.text, self.source_cfg)
+    except Exception as exc:
+        log.warning("본문 파싱 실패: %s (%s)", url, exc)
+        result.errors.append(f"parse: {url}: {exc}")  # ← failed 누락
+        return
+    ...
+```
+
+#### 변경 후
+
+```python
+# rss.py
+def _enrich_with_body(self, record: dict[str, Any], result: CollectResult) -> None:
+    url = record["url"]
+    try:
+        resp = self.http.get(url)
+    except FetchError as exc:
+        log.warning("본문 요청 실패(설명문으로 대체): %s (%s)", url, exc)
+        result.add_error(f"body: {url}: {exc}")   # ✅ failed 자동 증가
+        return
+    try:
+        parsed = extract_article(resp.text, self.source_cfg)
+    except Exception as exc:
+        log.warning("본문 파싱 실패: %s (%s)", url, exc)
+        result.add_error(f"parse: {url}: {exc}")  # ✅ failed 자동 증가
+        return
+    ...
+```
+
+**효과**: `failed` 카운터가 실제 실패 건수를 정확히 반영합니다.
+
+---
+
+### 리팩토링 2 — `succeeded` 증가 시점 조정
+
+#### 변경 전
+
+```python
+# rss.py collect()
+if with_content:
+    self._enrich_with_body(record, result)
+result.records.append(record)
+result.succeeded += 1   # ← 본문 실패 여부와 무관하게 증가
+taken += 1
+```
+
+#### 변경 후 (방법 A — 메타 수집 성공 기준 명시)
+
+```python
+# rss.py collect()
+# "succeeded = 메타데이터 수집 성공" 으로 정의를 문서화
+result.records.append(record)
+result.succeeded += 1   # 메타 수집 성공 기준
+taken += 1
+if with_content:
+    self._enrich_with_body(record, result)  # 실패 시 body_failed 증가
+```
+
+#### 변경 후 (방법 B — body_failed 카운터 분리)
+
+```python
+# base.py
+@dataclass
+class CollectResult:
+    method: str
+    source: str
+    records: list[dict[str, Any]] = field(default_factory=list)
+    succeeded: int = 0
+    failed: int = 0
+    body_failed: int = 0   # ✅ 본문 수집 실패 전용 카운터
+    errors: list[str] = field(default_factory=list)
+
+    def add_body_error(self, message: str) -> None:
+        self.body_failed += 1
+        self.errors.append(message)
+```
+
+```python
+# rss.py _enrich_with_body
+except FetchError as exc:
+    result.add_body_error(f"body: {url}: {exc}")  # ✅ 별도 집계
+    return
+```
+
+**효과**: 메타 수집 성공률과 본문 수집 성공률을 독립적으로 분석할 수 있습니다.
+
+---
+
+### 리팩토링 3 — `merge()` 수집 방법 정보 보존
+
+#### 변경 전
+
+```python
+# base.py
+@dataclass
+class CollectResult:
+    method: str    # ← 단일 문자열, merge 후 덮어씌워짐
+    source: str
+
+    def merge(self, other: "CollectResult") -> "CollectResult":
+        self.records.extend(other.records)
+        self.succeeded += other.succeeded
+        self.failed += other.failed
+        self.errors.extend(other.errors)
+        return self
+```
+
+#### 변경 후
+
+```python
+# base.py
+@dataclass
+class CollectResult:
+    method: str
+    source: str
+    records: list[dict[str, Any]] = field(default_factory=list)
+    succeeded: int = 0
+    failed: int = 0
+    body_failed: int = 0
+    errors: list[str] = field(default_factory=list)
+    _merged_methods: list[str] = field(default_factory=list)  # ✅ 병합 이력
+
+    def merge(self, other: "CollectResult") -> "CollectResult":
+        if not self._merged_methods:
+            self._merged_methods.append(self.method)
+        self._merged_methods.append(other.method)
+        self.records.extend(other.records)
+        self.succeeded += other.succeeded
+        self.failed += other.failed
+        self.body_failed += other.body_failed
+        self.errors.extend(other.errors)
+        return self
+
+    @property
+    def all_methods(self) -> list[str]:
+        """병합된 모든 수집 방법 목록."""
+        return self._merged_methods or [self.method]
+```
+
+**효과**: `result.all_methods` 로 `["rss", "crawl"]` 을 확인할 수 있어
+리포트에서 수집 방법별 통계 분리가 가능합니다.
+
+---
+
+### 리팩토링 4 — robots.txt TTL 파일 캐시
+
+#### 변경 전
+
+```python
+# http_client.py
+self._robots: dict[str, RobotFileParser | None] = {}
+# 인메모리 캐시 → 프로세스 재시작 시 매번 재요청
+```
+
+#### 변경 후
+
+```python
+# http_client.py
+import json
+import pathlib
+
+ROBOTS_CACHE_DIR = pathlib.Path(".cache/robots")
+ROBOTS_CACHE_TTL = 3600  # 1시간(초)
+
+class HttpClient:
+    def __init__(self, ...):
+        ...
+        self._robots: dict[str, RobotFileParser | None] = {}
+        ROBOTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _cache_key(self, origin: str) -> pathlib.Path:
+        safe = origin.replace("://", "_").replace("/", "_")
+        return ROBOTS_CACHE_DIR / f"{safe}.json"
+
+    def _robot_parser(self, url: str) -> RobotFileParser | None:
+        parts = urlsplit(url)
+        origin = f"{parts.scheme}://{parts.netloc}"
+
+        # 1) 메모리 캐시 확인
+        if origin in self._robots:
+            return self._robots[origin]
+
+        # 2) 파일 캐시 확인
+        cache_file = self._cache_key(origin)
+        if cache_file.exists():
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            if time.time() - data["ts"] < ROBOTS_CACHE_TTL:
+                parser = RobotFileParser()
+                parser.parse(data["lines"])
+                self._robots[origin] = parser
+                log.debug("robots.txt 파일 캐시 히트: %s", origin)
+                return parser
+
+        # 3) 실제 요청
+        parser = self._fetch_robots(origin)
+        self._robots[origin] = parser
+
+        # 4) 파일 캐시 저장
+        if parser is not None:
+            lines = []  # parser 내부 규칙을 재직렬화 (구현 생략)
+            cache_file.write_text(
+                json.dumps({"ts": time.time(), "lines": lines}),
+                encoding="utf-8",
+            )
+        return parser
+```
+
+**효과**: 동일 도메인에 대한 robots.txt 요청이 1시간에 1회로 제한됩니다.
+
+---
+
+### 리팩토링 5 — `per_category` 정확한 limit 분배
+
+#### 변경 전
+
+```python
+# rss.py
+per_category = max(1, math.ceil(limit / len(cats)))
+# limit=10, cats=3 → per_category=4 → 최대 12건 수집 가능
+```
+
+#### 변경 후
+
+```python
+# rss.py
+def _per_category_limits(self, limit: int, cats: list[str]) -> list[int]:
+    """limit 건을 카테고리에 균등 분배한다. 합계가 정확히 limit."""
+    n = len(cats)
+    base, remainder = divmod(limit, n)
+    return [base + (1 if i < remainder else 0) for i in range(n)]
+
+# collect() 내부
+limits = self._per_category_limits(limit, cats)
+for idx, category in enumerate(cats):
+    per_category = limits[idx]
+    ...
+```
+
+**효과**: `limit=10, cats=3` → `[4, 3, 3]` 으로 정확히 10건만 수집합니다.
+
+---
+
+### 전체 리팩토링 우선순위 요약
+
+| 순위 | 리팩토링 항목 | 파일 | 난이도 | 효과 |
+|------|--------------|------|--------|------|
+| 1 | `add_error()` 통일 (❶) | rss.py | ⭐ 쉬움 | 집계 정확도 즉시 개선 |
+| 2 | `body_failed` 카운터 분리 (❷) | base.py, rss.py | ⭐⭐ 보통 | 성공률 지표 신뢰성 확보 |
+| 3 | `merge()` 방법 이력 보존 (❸) | base.py | ⭐⭐ 보통 | 리포트 분석 품질 향상 |
+| 4 | `per_category` 균등 분배 (❺) | rss.py | ⭐ 쉬움 | limit 정확도 보장 |
+| 5 | robots.txt 파일 캐시 (❹) | http_client.py | ⭐⭐⭐ 복잡 | 불필요한 네트워크 요청 감소 |
