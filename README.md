@@ -24,6 +24,9 @@ python main.py analyze --category 경제
 python main.py report --format md
 python main.py export --format csv --status summarized
 ```
+
+---
+
 ## 2. 폴더 구조
 
 ```
