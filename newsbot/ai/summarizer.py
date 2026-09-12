@@ -73,9 +73,13 @@ class Summarizer:
         force: bool = False,
     ) -> list[Any]:
         """요약 대상 뉴스 목록을 고른다. mode: unsummarized | all | id"""
-        if news_id is not None or mode == "id":
+        if news_id is not None:
             row = self.storage.get_news(int(news_id))
             return [row] if row else []
+
+        if mode == "id":
+            log.warning("mode='id' 인데 news_id 가 지정되지 않았습니다.")
+            return []
 
         status = None if (mode == "all" or force) else "unsummarized"
         return self.storage.query_news(
