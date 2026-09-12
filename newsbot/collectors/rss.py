@@ -1,8 +1,9 @@
-"""수집 방법 1 — RSS 피드(공개 API 형태) 수집기.
+"""수집 방법 1 — RSS 피드(공개 API 대체) 수집기.
 
-장점: 발행처가 제공하는 **구조화된 데이터**라 파싱이 안정적이고, 사이트 개편에 강하며
-      요청 1회로 다수 기사 메타데이터를 얻어 서버 부담이 작다.
-단점: 제공하는 필드가 제한적이라 **본문 전문이 없다**. (여기서는 옵션으로 본문만 크롤링해 보완)
+장점: 서버에서 제공하는 구조화된 데이터를 파싱해 정확하고,
+      속도가 빠르며 본문을 가져오면 풍부한 데이터를 얻을 수 있다.
+단점: 제공하는 필드가 제한적이어서 본문 내용이 없다.
+      (기본값은 옵션으로 본문까지 추가로 가져와 보완)
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ METHOD = "rss"
 
 
 class RssCollector:
-    """RSS 피드에서 뉴스 메타데이터를 수집한다."""
+    """RSS 피드에서 뉴스 기사 데이터를 수집한다."""
 
     method = METHOD
 
@@ -46,9 +47,13 @@ class RssCollector:
         *,
         with_content: bool = True,
     ) -> CollectResult:
-        """카테고리별 RSS 를 읽어 원본 레코드 목록을 만든다."""
+        """카테고리별 RSS 를 순회해 지정 개수만큼 레코드를 수집한다."""
         result = CollectResult(method=self.method, source=self.source_key)
-        cats = categories or self.source_cfg.get("default_categories") or self.available_categories()
+        cats = (
+            categories
+            or self.source_cfg.get("default_categories")
+            or self.available_categories()
+        )
         cats = [c for c in cats if c]
         if not cats:
             log.error("수집할 카테고리가 없습니다.")
@@ -63,12 +68,12 @@ class RssCollector:
                 break
             slug = slugs.get(category)
             if not slug:
-                log.warning("알 수 없는 카테고리라 건너뜁니다: %s", category)
+                log.warning("알 수 없는 카테고리를 건너뜁니다: %s", category)
                 result.add_error(f"unknown category: {category}")
                 continue
 
             feed_url = template.format(slug=slug)
-            log.info("RSS 요청: %s (%s)", category, feed_url)
+            log.info("RSS 수집: %s (%s)", category, feed_url)
             try:
                 resp = self.http.get(feed_url, check_robots=False)
             except FetchError as exc:
@@ -119,7 +124,9 @@ class RssCollector:
             })
         return entries
 
-    def _to_record(self, entry: dict[str, str], category: str, feed_url: str) -> dict[str, Any] | None:
+    def _to_record(
+        self, entry: dict[str, str], category: str, feed_url: str
+    ) -> dict[str, Any] | None:
         link = entry.get("link", "").strip()
         if not link:
             return None
@@ -128,7 +135,9 @@ class RssCollector:
             "link": link,
             "pub_date": entry.get("pub_date"),
             "author": entry.get("author"),
-            "description": normalize_text(entry.get("description"), keep_newlines=False),
+            "description": normalize_text(
+                entry.get("description"), keep_newlines=False
+            ),
             "category": category,
             "content": "",
         }
@@ -144,20 +153,22 @@ class RssCollector:
             "payload": payload,
         }
 
-    def _enrich_with_body(self, record: dict[str, Any], result: CollectResult) -> None:
-        """본문 전문을 얻기 위해 기사 페이지를 추가로 1회 요청한다(실패해도 계속 진행)."""
+    def _enrich_with_body(
+        self, record: dict[str, Any], result: CollectResult
+    ) -> None:
+        """본문 보완을 위해 기사 페이지를 1회 추가 수집한다(실패해도 계속 진행)."""
         url = record["url"]
         try:
             resp = self.http.get(url)
         except FetchError as exc:
-            log.warning("본문 요청 실패(설명문으로 대체): %s (%s)", url, exc)
-            result.errors.append(f"body: {url}: {exc}")
+            log.warning("본문 수집 실패(선택적 처리): %s (%s)", url, exc)
+            result.add_body_error(f"body: {url}: {exc}")  # ✅ 수정
             return
         try:
             parsed = extract_article(resp.text, self.source_cfg)
-        except Exception as exc:  # 파싱 예외는 수집 전체를 멈추지 않는다
+        except Exception as exc:
             log.warning("본문 파싱 실패: %s (%s)", url, exc)
-            result.errors.append(f"parse: {url}: {exc}")
+            result.add_body_error(f"parse: {url}: {exc}")  # ✅ 수정
             return
 
         payload = record["payload"]
