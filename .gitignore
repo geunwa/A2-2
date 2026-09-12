@@ -23,3 +23,5 @@ env/
 .DS_Store
 Thumbs.db
 desktop.ini
+db_check.py
+out/
