@@ -301,11 +301,17 @@ python main.py export --format csv --status summarized
 
 ## 피드백 항목 요약
 
-| # | 피드백 | 원인 | 코드 수정 | 해결 방법 |
-|---|--------|------|:---------:|-----------|
-| 1 | RSS/크롤링 중복 저장 | URL 형태 차이, 설계된 동작 | ❌ | clean 단계에서 자동 정리 |
-| 2 | 오류 메시지 불명확 | 기본 로그 레벨 INFO | ❌ | `--log-level DEBUG` 사용 |
-| 3 | `--limit` 건수 혼동 | method별 한도, 합산 아님 | ❌ | method별 계산 이해 후 사용 |
-| 4 | `--auto-clean` 범위 불명확 | 기본값으로만 clean 실행 | ❌ | 세부 옵션은 clean 별도 실행 |
+> 교수 피드백 4개 항목에 대한 분석·실험·개선 근거는
+> **[EXPERIMENT.md](EXPERIMENT.md)** 에 전체 수록되어 있습니다.
+> 아래는 각 항목의 핵심 결론과 문서 위치를 안내합니다.
 
-> **결론: 4개 항목 모두 코드는 정상 동작합니다. 문서 보완으로 해결.**
+| # | 피드백 항목 | 핵심 결론 | 상세 문서 |
+|---|------------|-----------|-----------|
+| 1 | RSS vs 크롤링 실제 품질 차이 | 크롤링 본문 평균 1,655자 vs RSS 710자 (2.3배). URL 형태 불일치로 raw 중복 → clean 단계 url_hash로 정리 | [EXPERIMENT.md 1장](EXPERIMENT.md#1-rss-vs-크롤링--실측-품질-비교) |
+| 2 | 프롬프트 개선 과정 | 1차(기본형) → 2차(형식 강제) → 3차(환각 방지 + 후처리) 3단계 개선. 길이 초과율 30% → 5% 미만 | [EXPERIMENT.md 2장](EXPERIMENT.md#2-프롬프트-개선-과정) |
+| 3 | 토큰·비용 최적화 실험 | 본문 194자 → 압축률 100% 비효율 호출 식별. min_content_for_summary=300자 분리 기준 도출 | [EXPERIMENT.md 3장](EXPERIMENT.md#3-토큰--비용-최적화) |
+| 4 | 데이터 불일치 디버깅 전략 | raw 12 → clean 7 원인을 STEP별 추적. 중복 5건(URL 형태 차이) + 재발 방지 설계 반영 | [EXPERIMENT.md 4장](EXPERIMENT.md#4-데이터-불일치-디버깅--raw-12--clean-7) |
+
+> **이 문서(TROUBLESHOOTING.md)** 는 CLI 사용 중 발생하는
+> 운영상 문제(중복 수집 현상, 로그 확인법, limit 계산, auto-clean 범위)를 다룹니다.
+> 설계 판단·실험 근거·개선 이력은 EXPERIMENT.md를 참조하세요.
