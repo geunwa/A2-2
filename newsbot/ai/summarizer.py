@@ -106,12 +106,13 @@ class Summarizer:
             mode=mode, news_id=news_id, limit=limit, category=category,
             date_from=date_from, date_to=date_to, force=force,
         )
-        stats = SummarizeStats(target=len(rows))
+        total = len(rows)                                                    # ← 캐싱
+        stats = SummarizeStats(target=total)
         if not rows:
             log.info("요약 대상이 없습니다.")
             return stats
 
-        log.info("요약 대상: %d건 (모델=%s, 최대 %d자)", len(rows), self.client.label, max_chars)
+        log.info("요약 대상: %d건 (모델=%s, 최대 %d자)", total, self.client.label, max_chars)
         skip_done = bool(self.config.get("ai.summary.skip_if_summarized", True))
 
         for index, row in enumerate(rows, start=1):
@@ -119,30 +120,30 @@ class Summarizer:
             already = bool((row["summary"] or "").strip())
             if already and skip_done and not force:
                 stats.skipped += 1
-                log.info("[%d/%d] ID=%d 이미 요약됨 - 스킵", index, len(rows), news_id_value)
+                log.info("[%d/%d] ID=%d 이미 요약됨 - 스킵", index, total, news_id_value)
                 continue
 
             content = row["content"] or ""
             if not content.strip():
                 stats.failed += 1
-                log.warning("[%d/%d] ID=%d 본문이 비어 있어 스킵", index, len(rows), news_id_value)
+                log.warning("[%d/%d] ID=%d 본문이 비어 있어 스킵", index, total, news_id_value)
                 continue
 
             if dry_run:
                 stats.skipped += 1
-                log.info("[%d/%d] ID=%d (dry-run) 호출 생략", index, len(rows), news_id_value)
+                log.info("[%d/%d] ID=%d (dry-run) 호출 생략", index, total, news_id_value)
                 continue
 
             try:
                 summary = self.summarize_one(row["title"] or "", content, max_chars)
             except AIError as exc:
                 stats.failed += 1
-                log.error("[%d/%d] ID=%d 요약 실패: %s", index, len(rows), news_id_value, exc)
+                log.error("[%d/%d] ID=%d 요약 실패: %s", index, total, news_id_value, exc)
                 continue
 
             if not summary:
                 stats.failed += 1
-                log.error("[%d/%d] ID=%d 요약 결과가 비었습니다", index, len(rows), news_id_value)
+                log.error("[%d/%d] ID=%d 요약 결과가 비었습니다", index, total, news_id_value)
                 continue
 
             model = MOCK_LABEL if self.client.is_mock else self.client.label
@@ -150,7 +151,7 @@ class Summarizer:
             stats.success += 1
             log.info(
                 "[%d/%d] ID=%d 요약 완료 (%d자 → %d자)",
-                index, len(rows), news_id_value, len(content), len(summary),
+                index, total, news_id_value, len(content), len(summary),
             )
 
         log.info("요약 완료: %d건 성공, %d건 실패, %d건 스킵",
